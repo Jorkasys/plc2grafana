@@ -1,0 +1,53 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Установить зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest ruff
+
+      - name: Тесты
+        run: python -m pytest tests poller/tests -q
+
+      - name: Линтер
+        run: ruff check app run.py tools tests conftest.py poller/src --select F,E9
+
+  javascript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Интерфейс собирать не нужно, но синтаксис модулей проверяем:
+      # опечатка в скобках ломает всю страницу, а не одну функцию.
+      - name: Проверить синтаксис модулей
+        run: |
+          mkdir -p /tmp/esm
+          for f in $(find web -name '*.js' -not -path 'web/vendor/*'); do
+            cp "$f" "/tmp/esm/$(basename "${f%.js}").mjs"
+          done
+          for f in /tmp/esm/*.mjs; do node --check "$f"; done

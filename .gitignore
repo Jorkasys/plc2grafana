@@ -1,0 +1,18 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+data/
+
+# Локальное состояние приложения: сгенерированные пароли, адрес БД
+config/app.json
+
+# Всё, что приложение скачивает и создаёт само:
+# portable-сборка Grafana, её данные, логи и сгенерированные дашборды
+runtime/
+.ruff_cache/
+
+# Файлы IDE
+.idea/
+.vscode/

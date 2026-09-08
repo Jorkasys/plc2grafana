@@ -1,0 +1,15 @@
+# Единые переводы строк в репозитории, независимо от того, кто коммитит
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.svg text
+*.zip binary
+
+# Библиотека графиков — не наш код, не считаем его в статистике языков
+web/vendor/** linguist-vendored
+# Скриншоты интерфейса — документация, а не исходники
+web/img/** linguist-documentation

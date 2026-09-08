@@ -1,0 +1,135 @@
+# ===========================================================================
+#  КАРТА ТЕГОВ  —  единственный файл, который вы правите под своё устройство
+# ===========================================================================
+#
+#  Поля тега:
+#    name              обязательное. Уникально в пределах устройства.
+#                      Попадает в БД и в Grafana. Разрешены [A-Za-z0-9_.-].
+#    address           обязательное. АДРЕС ПРОТОКОЛА, начиная с 0.
+#                      Внимание: в документации Siemens/шлюзов адреса часто
+#                      пишут в "человеческом" виде 40001/30001/10001.
+#                      40001 -> holding, address: 0
+#                      40011 -> holding, address: 10
+#                      30001 -> input,   address: 0
+#                      10001 -> discrete,address: 0
+#                      00001 -> coil,    address: 0
+#    register          holding (FC3) | input (FC4) | coil (FC1) | discrete (FC2)
+#    datatype          bool | int16 | uint16 | int32 | uint32 | int64 | uint64
+#                      | float32 | float64 | string
+#    length            только для string — количество РЕГИСТРОВ (2 символа each)
+#    bit               только для datatype: bool на holding/input —
+#                      номер бита 0..15 внутри регистра
+#    scale, offset     value = raw * scale + offset  (масштабирование ПЛК)
+#    unit              единица измерения, показывается в Grafana
+#    description       человекочитаемое описание
+#    poll_interval_ms  переопределяет defaults устройства
+#    deadband          мёртвая зона: не писать, пока |new-old| < deadband
+#    deadband_mode     absolute | percent
+#    heartbeat_s       принудительная запись раз в N секунд
+#    word_order        big | little   (переопределяет defaults)
+#    byte_order        big | little   (переопределяет defaults)
+#    min, max          опциональные границы правдоподобия. Значение вне
+#                      диапазона пишется с quality=BAD_RANGE.
+#    enabled           false — тег читается, но не пишется (для отладки)
+#
+#  Ниже — ПРИМЕРЫ. Удалите их и впишите свои.
+# ===========================================================================
+
+tags:
+
+  # --- Аналоговые входы, REAL (float32) в holding-регистрах ---------------
+  - name: temp_reactor_1
+    description: "Температура реактора №1"
+    address: 0            # 40001..40002
+    register: holding
+    datatype: float32
+    unit: "°C"
+    poll_interval_ms: 1000
+    deadband: 0.2
+    min: -50
+    max: 400
+
+  - name: pressure_line
+    description: "Давление в магистрали"
+    address: 2            # 40003..40004
+    register: holding
+    datatype: float32
+    unit: "bar"
+    deadband: 0.05
+    min: 0
+    max: 25
+
+  # --- Целое со скалированием (ПЛК отдаёт 0..27648, это 4..20 мА) ---------
+  - name: flow_raw
+    description: "Расход, сырое значение с аналогового входа S7"
+    address: 4
+    register: holding
+    datatype: int16
+    scale: 0.5787037      # 27648 -> 16000 л/ч
+    offset: 0
+    unit: "л/ч"
+    deadband: 5
+    min: 0
+    max: 16000
+
+  # --- 32-битный счётчик -------------------------------------------------
+  - name: total_production
+    description: "Счётчик выпуска, нарастающий итог"
+    address: 10           # 40011..40012
+    register: holding
+    datatype: uint32
+    unit: "шт"
+    poll_interval_ms: 5000
+    deadband: 1
+
+  # --- Отдельный бит внутри слова состояния -------------------------------
+  - name: pump_running
+    description: "Насос P-101 в работе"
+    address: 20
+    register: holding
+    datatype: bool
+    bit: 0
+    heartbeat_s: 300
+
+  - name: alarm_high_temp
+    description: "Авария: перегрев"
+    address: 20
+    register: holding
+    datatype: bool
+    bit: 3
+    heartbeat_s: 300
+
+  # --- Дискретный вход (FC2) ---------------------------------------------
+  - name: door_open
+    description: "Концевик двери шкафа"
+    address: 0
+    register: discrete
+    datatype: bool
+    poll_interval_ms: 500
+
+  # --- Катушка (FC1) ------------------------------------------------------
+  - name: valve_v12_cmd
+    description: "Команда на клапан V-12"
+    address: 5
+    register: coil
+    datatype: bool
+
+  # --- Input register (FC4), быстро меняющийся сигнал ---------------------
+  - name: motor_current
+    description: "Ток двигателя M-1"
+    address: 100
+    register: input
+    datatype: uint16
+    scale: 0.1
+    unit: "A"
+    poll_interval_ms: 250
+    deadband: 0.5
+
+  # --- Строка (например, номер рецепта) -----------------------------------
+  - name: recipe_name
+    description: "Имя текущего рецепта"
+    address: 200
+    register: holding
+    datatype: string
+    length: 8             # 8 регистров = 16 символов
+    poll_interval_ms: 10000
