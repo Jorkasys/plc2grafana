@@ -37,7 +37,11 @@ jobs:
           cp -r web _site
           touch _site/.nojekyll
 
+      # enablement: включить Pages, если источник ещё не переведён
+      # на GitHub Actions, — иначе шаг падает на свежем репозитории
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

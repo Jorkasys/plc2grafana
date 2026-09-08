@@ -334,7 +334,7 @@ docker compose --profile grafana up -d   # + Grafana контейнером
 ## Разработка
 
 ```bash
-pip install -r requirements.txt pytest ruff
+pip install -r requirements.txt pytest pytest-asyncio ruff
 python -m pytest tests poller/tests -q     # 109 тестов
 python run.py --reload
 ```
