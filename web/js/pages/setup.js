@@ -1,6 +1,6 @@
 // Мастер первичной настройки: подключение к PostgreSQL и установка схемы.
 
-import { el, field, input, post, toast, fail, spinner } from '../core.js';
+import { el, field, input, get, post, toast, fail, spinner } from '../core.js';
 
 export const title = 'Первичная настройка';
 export const subtitle = 'Где приложение будет хранить историю тегов';
@@ -15,6 +15,21 @@ export async function mount(view, shell) {
     user: input({ value: 'plc', class: 'mono' }),
     retention_days: input({ value: '90', type: 'number', min: '0' }),
   };
+
+  // Подставляем то, что уже известно: в docker и после скрипта установки
+  // адрес сервера и имя администратора приходят из переменных окружения
+  try {
+    const { database: db } = await get('/settings');
+    form.host.value = db.host || form.host.value;
+    form.port.value = db.port || form.port.value;
+    form.name.value = db.name || form.name.value;
+    form.admin_user.value = db.admin_user || form.admin_user.value;
+    form.user.value = db.user || form.user.value;
+    form.retention_days.value = db.retention_days ?? form.retention_days.value;
+    if (db.admin_password) {
+      form.admin_password.placeholder = 'задан в настройках — можно не вводить';
+    }
+  } catch { /* настройки недоступны — остаются значения по умолчанию */ }
 
   const result = el('div');
   const testBtn = el('button', { onclick: onTest }, 'Проверить подключение');

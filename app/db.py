@@ -133,11 +133,11 @@ class Database:
             await owner.execute(_read_sql("001_core.sql"))
             steps.append("схема 001_core применена")
             if has_ts:
-                try:
-                    await owner.execute(_read_sql("002_timescale.sql"))
+                failed = await _apply_timescale(owner)
+                if failed:
+                    steps.append("TimescaleDB-часть применена частично: " + "; ".join(failed))
+                else:
                     steps.append("схема 002_timescale применена (гипертаблица, агрегаты, сжатие)")
-                except Exception as exc:  # noqa: BLE001
-                    steps.append(f"TimescaleDB-часть пропущена: {_human(exc)}")
             else:
                 steps.append("TimescaleDB не найден — работаем на обычном PostgreSQL")
             await _grant_readonly(owner, cfg.readonly_user, has_ts, steps)
@@ -160,6 +160,23 @@ class Database:
             ) from exc
 
     # ----------------------------------------------------------- обслуживание
+    async def migrate(self) -> None:
+        """Догнать схему до текущей версии кода.
+
+        001_core.sql целиком идемпотентен (IF NOT EXISTS, ADD COLUMN IF NOT
+        EXISTS, CREATE OR REPLACE VIEW), поэтому его безопасно применять при
+        каждом старте. Обновление приложения сводится к git pull и перезапуску.
+        """
+        if self.pool is None:
+            return
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(_read_sql("001_core.sql"))
+        except DatabaseError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise DatabaseError(_human(exc)) from exc
+
     async def apply_retention(self) -> int:
         """Удалить сырьё старше retention_days. Для баз без TimescaleDB."""
         days = self.cfg.retention_days
@@ -188,6 +205,36 @@ def _admin_dsn_for(cfg: DatabaseSettings, database: str) -> str:
 
     return (f"postgresql://{quote(cfg.admin_user)}:{quote(cfg.admin_password)}"
             f"@{cfg.host}:{cfg.port}/{database}")
+
+
+def split_sql(text: str) -> list[str]:
+    """Разбить SQL-файл на отдельные операторы.
+
+    Нужен для TimescaleDB: CREATE MATERIALIZED VIEW ... WITH
+    (timescaledb.continuous) нельзя выполнять внутри транзакции, а несколько
+    операторов одним запросом PostgreSQL выполняет как раз в одной неявной
+    транзакции. Файлы схемы простые: без функций и точек с запятой в строках.
+    """
+    lines = []
+    for line in text.splitlines():
+        code = line.split("--", 1)[0].rstrip()
+        if code:
+            lines.append(code)
+    statements = chr(10).join(lines).split(";")
+    return [stmt.strip() for stmt in statements if stmt.strip()]
+
+
+async def _apply_timescale(conn) -> list[str]:
+    """Применить 002_timescale.sql по одному оператору. Возвращает ошибки."""
+    failed: list[str] = []
+    for statement in split_sql(_read_sql("002_timescale.sql")):
+        try:
+            await conn.execute(statement)
+        except Exception as exc:  # noqa: BLE001
+            head = " ".join(statement.split()[:4])
+            failed.append(f"{head}…: {_human(exc)}")
+            log.warning("TimescaleDB: %s — %s", head, exc)
+    return failed
 
 
 def _read_sql(name: str) -> str:

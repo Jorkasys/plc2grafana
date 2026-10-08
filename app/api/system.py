@@ -99,7 +99,9 @@ async def test_db(payload: DbSetupRequest) -> dict:
 
     from urllib.parse import quote
 
-    dsn = (f"postgresql://{quote(payload.admin_user)}:{quote(payload.admin_password)}"
+    # Пустой пароль в форме — «возьми тот, что уже задан» (из окружения/конфига)
+    password = payload.admin_password or ctx.settings.database.admin_password
+    dsn = (f"postgresql://{quote(payload.admin_user)}:{quote(password)}"
            f"@{payload.host}:{payload.port}/{payload.admin_db}")
     try:
         conn = await asyncpg.connect(dsn=dsn, timeout=8)
@@ -132,7 +134,8 @@ async def init_db(payload: DbSetupRequest) -> dict:
     cfg.port = payload.port
     cfg.name = payload.name
     cfg.admin_user = payload.admin_user
-    cfg.admin_password = payload.admin_password
+    if payload.admin_password:
+        cfg.admin_password = payload.admin_password
     cfg.admin_db = payload.admin_db
     cfg.user = payload.user
     cfg.retention_days = payload.retention_days

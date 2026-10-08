@@ -96,6 +96,28 @@ class GrafanaManager:
         return self.settings.grafana
 
     @property
+    def bind_host(self) -> str:
+        """Где слушает встроенная Grafana: по умолчанию там же, где интерфейс."""
+        return self.cfg.bind_host or self.settings.server.host or "127.0.0.1"
+
+    @property
+    def exposed(self) -> bool:
+        """Доступна ли Grafana с других компьютеров."""
+        return self.bind_host not in {"127.0.0.1", "localhost", "::1"}
+
+    @property
+    def api_url(self) -> str:
+        """Адрес для запросов самого приложения к Grafana."""
+        if not self.cfg.managed:
+            return self.cfg.url
+        host = self.bind_host
+        if host in {"0.0.0.0", "::", ""}:
+            host = "127.0.0.1"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"http://{host}:{self.cfg.port}"
+
+    @property
     def install_dir(self) -> Path:
         return GRAFANA_HOME / f"grafana-v{self.cfg.version}"
 
@@ -107,7 +129,10 @@ class GrafanaManager:
         if not self.install_dir.is_dir():
             return None
         suffix = ".exe" if os.name == "nt" else ""
-        for name in (f"grafana-server{suffix}", f"grafana{suffix}"):
+        # Сначала настоящий сервер: grafana-server — устаревшая обёртка, которая
+        # запускает «grafana server» дочерним процессом. Остановив обёртку,
+        # мы оставили бы сам сервер висеть на порту (так и было в Windows).
+        for name in (f"grafana{suffix}", f"grafana-server{suffix}"):
             candidate = self.install_dir / "bin" / name
             if candidate.is_file():
                 return candidate
@@ -301,6 +326,10 @@ class GrafanaManager:
                 f"или укажите другой порт на странице «Система»")
 
         async with self._lock:
+            # Автозапуск и кнопка в интерфейсе могут прийти одновременно:
+            # второй вызов не должен поднимать ещё один процесс на тот же порт
+            if self._proc is not None and self._proc.poll() is None:
+                return self.status()
             binary = self._binary()
             if binary is None:
                 raise GrafanaError("Grafana не установлена — нажмите «Установить»")
@@ -348,9 +377,10 @@ class GrafanaManager:
             "GF_PATHS_LOGS": str(GRAFANA_LOGS),
             "GF_PATHS_PLUGINS": str(GRAFANA_PLUGINS),
             "GF_PATHS_PROVISIONING": str(PROVISIONING_DIR),
-            "GF_SERVER_HTTP_ADDR": "127.0.0.1",
+            "GF_SERVER_HTTP_ADDR": self.bind_host,
             "GF_SERVER_HTTP_PORT": str(cfg.port),
-            "GF_SERVER_ROOT_URL": f"http://127.0.0.1:{cfg.port}/",
+            "GF_SERVER_ROOT_URL": (cfg.public_url.rstrip("/") + "/") if cfg.public_url
+                                  else f"http://localhost:{cfg.port}/",
             "GF_SECURITY_ADMIN_USER": cfg.admin_user,
             "GF_SECURITY_ADMIN_PASSWORD": cfg.admin_password,
             # Нужно, чтобы дашборды открывались в iframe внутри нашего интерфейса
@@ -369,6 +399,7 @@ class GrafanaManager:
             "GF_PLUGINS_PREINSTALL": "",
             "GF_PLUGINS_PREINSTALL_DISABLED": "true",
             "GF_PLUGIN_ADMIN_ENABLED": "false",
+            "GF_LIVE_ALLOWED_ORIGINS": "*" if self.exposed and not cfg.public_url else "",
             "GF_LOG_MODE": "console file",
             "GF_LOG_LEVEL": "info",
         }
@@ -393,6 +424,22 @@ class GrafanaManager:
                 self.process.exit_code = code
                 log.warning("процесс Grafana завершился с кодом %s", code)
 
+    async def autostart(self) -> None:
+        """Поднять Grafana вместе с приложением, если это уместно.
+
+        Ошибки только логируем: недоступная Grafana не должна мешать опросу.
+        """
+        cfg = self.cfg
+        if not (cfg.managed and cfg.enabled and cfg.autostart and self.installed):
+            return
+        if self.process.running and await self.health():
+            return
+        try:
+            await self.start()
+            log.info("Grafana запущена автоматически: %s", self.api_url)
+        except GrafanaError as exc:
+            log.warning("автозапуск Grafana не удался: %s", exc)
+
     async def stop(self) -> dict[str, Any]:
         async with self._lock:
             proc, self._proc = self._proc, None
@@ -401,7 +448,12 @@ class GrafanaManager:
                 await asyncio.gather(self._reader, return_exceptions=True)
                 self._reader = None
             if proc is not None and proc.poll() is None:
-                proc.terminate()
+                if os.name == "nt":
+                    # Гасим всё дерево: у старых сборок под сервером может
+                    # оказаться дочерний процесс
+                    await asyncio.to_thread(_terminate_pid, proc.pid)
+                else:
+                    proc.terminate()
                 try:
                     await asyncio.to_thread(proc.wait, 15)
                 except Exception:  # noqa: BLE001
@@ -429,7 +481,7 @@ class GrafanaManager:
     async def health(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
-                response = await client.get(f"{self.cfg.url}/api/health")
+                response = await client.get(f"{self.api_url}/api/health")
                 return response.status_code == 200
         except Exception:  # noqa: BLE001
             return False
@@ -449,7 +501,11 @@ class GrafanaManager:
             "installed": self.installed,
             "version": self.cfg.version,
             "install_dir": str(self.install_dir),
-            "url": self.cfg.url,
+            "url": self.api_url,
+            "browser_url": self.cfg.browser_url,
+            "bind_host": self.bind_host if self.cfg.managed else None,
+            "exposed": self.exposed if self.cfg.managed else None,
+            "autostart": self.cfg.autostart,
             "port": self.cfg.port,
             "admin_user": self.cfg.admin_user,
             "running": self.process.running,

@@ -5,12 +5,17 @@
     python run.py --port 8080
     python run.py --host 0.0.0.0  # доступ с других машин в сети
     python run.py --no-browser
+    python run.py --log-file runtime/logs/app.log   # для работы службой
+    python run.py --install-grafana                 # скачать Grafana и выйти
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
+import logging.handlers
+import socket
 import sys
 import threading
 import time
@@ -47,6 +52,10 @@ def parse_args() -> argparse.Namespace:
                         help="перезапуск при правке кода (для разработки)")
     parser.add_argument("--log-level", default="info",
                         choices=["debug", "info", "warning", "error"])
+    parser.add_argument("--log-file", default=None,
+                        help="дополнительно писать журнал в файл (с ротацией)")
+    parser.add_argument("--install-grafana", action="store_true",
+                        help="скачать portable-сборку Grafana и выйти")
     parser.add_argument("--version", action="version", version=f"plc2grafana {__version__}")
     args = parser.parse_args()
     args._settings = settings
@@ -64,12 +73,61 @@ def open_browser_later(url: str, delay: float = 1.5) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
-def main() -> int:
-    args = parse_args()
-    logging.basicConfig(level=args.log_level.upper(), format=LOG_FORMAT)
+def setup_logging(level: str, log_file: str | None) -> None:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file:
+        path = Path(log_file)
+        if not path.is_absolute():
+            path = ROOT / path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.handlers.RotatingFileHandler(
+            path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"))
+    logging.basicConfig(level=level.upper(), format=LOG_FORMAT, handlers=handlers)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
+
+def lan_addresses() -> list[str]:
+    """Адреса этой машины в локальной сети — чтобы подсказать, куда заходить."""
+    found: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.add(info[4][0])
+    except OSError:
+        pass
+    try:
+        # Адрес интерфейса, через который идёт маршрут «наружу»; пакеты не шлются
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("10.255.255.255", 1))
+            found.add(probe.getsockname()[0])
+    except OSError:
+        pass
+    return sorted(ip for ip in found if not ip.startswith("127."))
+
+
+def install_grafana(settings: Settings) -> int:
+    from app.grafana.manager import GrafanaError, GrafanaManager
+
+    manager = GrafanaManager(settings)
+    if manager.installed:
+        print(f"Grafana {settings.grafana.version} уже установлена: {manager.install_dir}")
+        return 0
+    print(f"Скачиваем Grafana {settings.grafana.version} ({manager.archive_name()})…")
+    try:
+        asyncio.run(manager.install())
+    except GrafanaError as exc:
+        print(f"Не удалось: {exc}", file=sys.stderr)
+        return 1
+    print(f"Готово: {manager.install_dir}")
+    return 0
+
+
+def main() -> int:
+    args = parse_args()
+    setup_logging(args.log_level, args.log_file)
+
     settings: Settings = args._settings
+    if args.install_grafana:
+        return install_grafana(settings)
     settings.server.host = args.host
     settings.server.port = args.port
     if args.no_browser:
@@ -82,8 +140,13 @@ def main() -> int:
     print(f"  plc2grafana {__version__}")
     print(f"  Интерфейс:  {url}")
     print(f"  API-доки:   {url}/api/docs")
+    if args.host in {"0.0.0.0", "::"}:
+        for ip in lan_addresses():
+            print(f"  По сети:    http://{ip}:{args.port}")
     print("  Остановка:  Ctrl+C")
-    print()
+    # Под systemd и Планировщиком stdout буферизуется — без flush адреса
+    # появились бы в журнале только при остановке
+    print(flush=True)
 
     if settings.server.open_browser and not args.reload:
         open_browser_later(url)
@@ -97,6 +160,9 @@ def main() -> int:
         reload=args.reload,
         log_level=args.log_level,
         access_log=False,
+        # Логированием управляем сами: uvicorn пишет в те же обработчики,
+        # включая файл из --log-file
+        log_config=None,
     )
     return 0
 

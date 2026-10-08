@@ -69,10 +69,14 @@ async def list_dashboards() -> dict:
     client = ctx.grafana_client()
     items = await client.dashboards()
     for item in items:
+        # Браузер сам подставит хост: сервер знает Grafana как 127.0.0.1
+        # или http://grafana:3000, а пользователь может сидеть на другом ПК
         item["embed_url"] = client.embed_url(item["path"])
+        item["embed_path"] = item["embed_url"][len(client.url):]
     files = sorted(p.name for p in DASHBOARD_DIR.glob("plc-*.json")) \
         if DASHBOARD_DIR.is_dir() else []
-    return {"dashboards": items, "files": files, "url": ctx.settings.grafana.url}
+    return {"dashboards": items, "files": files,
+            "browser_url": ctx.settings.grafana.browser_url}
 
 
 async def _generate() -> dict:

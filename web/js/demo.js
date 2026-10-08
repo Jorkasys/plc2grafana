@@ -433,6 +433,7 @@ function grafanaStatus() {
     version: '11.6.0',
     install_dir: 'runtime/grafana/grafana-v11.6.0',
     url: 'http://127.0.0.1:3000',
+    browser_url: 'http://localhost:3000',
     port: 3000,
     admin_user: 'admin',
     running: grafana.running,

@@ -109,6 +109,10 @@ flowchart LR
 
 ## Быстрый старт
 
+> 📘 **[Подробное руководство по установке — INSTALL.md](INSTALL.md)**: Windows,
+> Linux-виртуалка одной командой, Docker, автозапуск, доступ по сети,
+> безопасность, резервное копирование, диагностика.
+
 Нужен **Python 3.11+** и **PostgreSQL** (обычный подойдёт; TimescaleDB, если он
 есть, включится автоматически).
 
@@ -140,8 +144,30 @@ python run.py
 генерируются и сохраняются в `config/app.json` — вводить их больше нигде
 не нужно.
 
-Ключи запуска: `--port 8080`, `--host 0.0.0.0` (доступ с других машин в сети),
-`--no-browser`, `--reload`.
+Ключи запуска: `--port 8080`, `--host 0.0.0.0` (доступ с других машин в сети —
+Grafana откроется туда же), `--no-browser`, `--log-file`, `--reload`.
+
+### Сервер на Linux — одной командой
+
+Ubuntu 22.04+ / Debian 12+, например виртуалка для цеха:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jorkasys/plc2grafana/main/deploy/install_linux.sh | sudo bash
+```
+
+Поставит PostgreSQL и Python, развернёт приложение в `/opt/plc2grafana`,
+скачает Grafana и запустит всё службой systemd. База настраивается сама,
+после перезагрузки всё поднимается само. Повторный запуск — обновление.
+
+### Docker
+
+```bash
+cp .env.example .env      # задайте POSTGRES_ADMIN_PASSWORD
+docker compose up -d --build
+```
+
+TimescaleDB, приложение и Grafana — тремя контейнерами, база настраивается
+сама. Подробности — [INSTALL.md, раздел 5](INSTALL.md#5-docker).
 
 ### Без контроллера
 
@@ -273,6 +299,8 @@ poller/src/modbus_logger/ ядро опроса
 db/                       SQL-схема: 001_core (всегда), 002_timescale (если есть)
 tools/simulator.py        эмулятор Modbus TCP
 tools/screenshots.py      обновление снимков интерфейса для README
+tools/e2e_check.py        сквозная проверка развёрнутого стека
+deploy/install_linux.sh   установка на Linux одной командой (служба systemd)
 runtime/                  всё, что приложение скачивает и создаёт само
 ```
 
@@ -297,13 +325,15 @@ curl -X POST localhost:8000/api/runtime/reload       # перечитать ко
 ### Grafana
 
 Portable-сборка (~250 МБ) скачивается в `runtime/grafana`, лишнее из неё
-удаляется автоматически. Grafana слушает только `127.0.0.1`, анонимный
-просмотр включён, чтобы дашборды открывались внутри интерфейса без второго
-логина. Дашборды редактируемые, но кнопка «Сгенерировать дашборды»
+удаляется автоматически, а дальше Grafana запускается вместе с приложением.
+Слушает там же, где веб-интерфейс: по умолчанию только `127.0.0.1`, с
+`--host 0.0.0.0` — и для сети. Анонимный просмотр включён, чтобы дашборды
+открывались внутри интерфейса без второго логина. Дашборды редактируемые, но кнопка «Сгенерировать дашборды»
 перезаписывает файлы `plc-*.json` — свои дашборды сохраняйте под другим uid.
 
 Если Grafana уже развёрнута отдельно, укажите её адрес в `config/app.json`
-(`grafana.external_url`) или в переменной `PLC_GRAFANA_URL`.
+(`grafana.external_url`) или в переменной `PLC_GRAFANA_URL`. Все настройки и
+переменные — в [справочнике INSTALL.md](INSTALL.md#12-справочник).
 
 ### Несколько контроллеров, RTU, сеть
 
@@ -318,16 +348,8 @@ Portable-сборка (~250 МБ) скачивается в `runtime/grafana`, �
 pg_dump -h 127.0.0.1 -U plc -d plc -Fc > plc_$(date +%F).dump
 ```
 
-### Docker
-
-```bash
-cp .env.example .env      # задайте POSTGRES_ADMIN_PASSWORD
-docker compose up -d --build
-docker compose --profile grafana up -d   # + Grafana контейнером
-```
-
-В docker-режиме приложение не скачивает Grafana само — она поднимается
-соседним контейнером и читает provisioning из общего тома.
+Перенос на другую машину и восстановление (в том числе с TimescaleDB) —
+[INSTALL.md, раздел 8](INSTALL.md#8-резервное-копирование-и-перенос).
 
 ---
 
@@ -335,7 +357,7 @@ docker compose --profile grafana up -d   # + Grafana контейнером
 
 ```bash
 pip install -r requirements.txt pytest pytest-asyncio ruff
-python -m pytest tests poller/tests -q     # 109 тестов
+python -m pytest -q                       # 123 теста
 python run.py --reload
 ```
 

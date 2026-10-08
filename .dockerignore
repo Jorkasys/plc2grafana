@@ -1,0 +1,16 @@
+# В образ попадает только то, что перечислено в Dockerfile, но docker всё равно
+# отправляет весь каталог как контекст сборки. Без этого файла туда уехали бы
+# скачанная Grafana (~1.7 ГБ) и виртуальное окружение.
+.git
+.github
+.venv
+venv
+runtime
+config/app.json
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.idea
+.vscode
+.env

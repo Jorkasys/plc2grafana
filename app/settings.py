@@ -73,15 +73,39 @@ class GrafanaSettings:
     admin_user: str = "admin"
     admin_password: str = ""
     # Анонимный просмотр — чтобы дашборды открывались внутри нашего интерфейса
-    # без второго логина. Grafana слушает только localhost.
+    # без второго логина.
     anonymous_view: bool = True
-    # Внешняя Grafana вместо встроенной (пусто = использовать встроенную)
+    # Запускать встроенную Grafana вместе с приложением (если она установлена).
+    # Нужно для работы службой: после перезагрузки дашборды поднимаются сами.
+    autostart: bool = True
+    # На каком адресе слушает встроенная Grafana. Пусто — там же, где
+    # веб-интерфейс: запустили приложение с --host 0.0.0.0, и Grafana тоже
+    # станет доступна с других компьютеров.
+    bind_host: str = ""
+    # Адрес Grafana, каким его видит браузер пользователя. Пусто — браузер
+    # возьмёт адрес, по которому открыт интерфейс, и порт Grafana. Задавайте,
+    # только если Grafana стоит за обратным прокси или на другом хосте.
+    public_url: str = ""
+    # Внешняя Grafana вместо встроенной (пусто = использовать встроенную).
+    # Это адрес для запросов самого приложения — в docker это http://grafana:3000.
     external_url: str = ""
     external_token: str = ""
 
     @property
     def url(self) -> str:
+        """Адрес для запросов приложения к Grafana (не для браузера)."""
         return self.external_url.rstrip("/") or f"http://127.0.0.1:{self.port}"
+
+    @property
+    def browser_url(self) -> str:
+        """Адрес Grafana для браузера. Пусто — браузер вычислит его сам:
+        хост, по которому открыт интерфейс, и порт Grafana."""
+        if self.public_url:
+            return self.public_url.rstrip("/")
+        if self.managed or _internal_host(self.external_url):
+            # docker-имя вроде http://grafana:3000 браузеру ни о чём не говорит
+            return ""
+        return self.external_url.rstrip("/")
 
     @property
     def managed(self) -> bool:
@@ -146,6 +170,9 @@ class Settings:
             "PLC_GRAFANA_URL": (self.grafana, "external_url", str),
             "PLC_GRAFANA_TOKEN": (self.grafana, "external_token", str),
             "PLC_GRAFANA_PORT": (self.grafana, "port", int),
+            "PLC_GRAFANA_BIND": (self.grafana, "bind_host", str),
+            "PLC_GRAFANA_PUBLIC_URL": (self.grafana, "public_url", str),
+            "PLC_GRAFANA_AUTOSTART": (self.grafana, "autostart", _flag),
         }
         for env_name, (holder, attr, cast) in env_map.items():
             value = os.environ.get(env_name)
@@ -173,6 +200,7 @@ class Settings:
         gf["admin_password"] = "••••" if gf["admin_password"] else ""
         gf["external_token"] = "••••" if gf["external_token"] else ""
         gf["url"] = self.grafana.url
+        gf["browser_url"] = self.grafana.browser_url
         gf["managed"] = self.grafana.managed
         return {"server": asdict(self.server), "database": db, "grafana": gf}
 
@@ -181,6 +209,19 @@ def _dsn(user: str, password: str, host: str, port: int, name: str) -> str:
     from urllib.parse import quote
 
     return f"postgresql://{quote(user)}:{quote(password)}@{host}:{port}/{name}"
+
+
+def _internal_host(url: str) -> bool:
+    """Адрес, который понятен только серверу: docker-сервис или localhost."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    return (not host or host == "localhost" or host.startswith("127.")
+            or ("." not in host and ":" not in host))
+
+
+def _flag(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "да"}
 
 
 def _build(cls, raw: Any):

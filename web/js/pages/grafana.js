@@ -25,10 +25,23 @@ export async function mount(view, shell) {
   await refresh();
   poll = setInterval(quietRefresh, 4000);
 
+  // Адрес Grafana для браузера. Приложение может работать на виртуалке, а
+  // открываться с другого компьютера: «127.0.0.1» там означал бы localhost
+  // самого пользователя, поэтому берём хост, по которому открыт интерфейс.
+  function grafanaBase() {
+    if (status.browser_url) return status.browser_url;
+    return `${location.protocol}//${location.hostname}:${status.port}`;
+  }
+
+  // Встроенной Grafana мы управляем сами, внешнюю (docker) — только видим
+  function grafanaUp() {
+    return status.running || (!status.managed && status.healthy);
+  }
+
   async function refresh() {
     try {
       status = await get('/grafana/status');
-      dashboards = status.running ? (await get('/grafana/dashboards')).dashboards : [];
+      dashboards = grafanaUp() ? (await get('/grafana/dashboards')).dashboards : [];
       draw();
     } catch (err) {
       view.replaceChildren(el('div', { class: 'note bad' }, err.message));
@@ -40,12 +53,13 @@ export async function mount(view, shell) {
       const next = await get('/grafana/status');
       const changed = !status
         || next.running !== status.running
+        || next.healthy !== status.healthy
         || next.installed !== status.installed
         || next.download.active !== status.download.active
         || next.download.percent !== status.download.percent;
       status = next;
       if (changed) {
-        if (status.running && !dashboards.length) {
+        if (grafanaUp() && !dashboards.length) {
           dashboards = (await get('/grafana/dashboards')).dashboards;
         }
         draw();
@@ -56,22 +70,31 @@ export async function mount(view, shell) {
   function draw() {
     const parts = [statusCard()];
     if (status.download.active) parts.push(downloadCard());
-    if (status.running) parts.push(viewerCard());
+    if (grafanaUp()) parts.push(viewerCard());
     else parts.push(helpCard());
     view.replaceChildren(...parts);
   }
 
   function statusCard() {
-    const chips = [
+    const chips = status.managed ? [
       ['Установлена', status.installed ? 'да' : 'нет', status.installed ? 'ok' : 'warn'],
       ['Процесс', status.running ? `запущен (pid ${status.pid})` : 'остановлен',
         status.running ? 'ok' : 'warn'],
       ['Версия', status.version, ''],
-      ['Адрес', status.url, ''],
+      ['Адрес', grafanaBase(), ''],
+    ] : [
+      ['Режим', 'внешняя Grafana', ''],
+      ['Связь', status.healthy ? 'есть' : 'нет', status.healthy ? 'ok' : 'bad'],
+      ['Адрес', grafanaBase(), ''],
     ];
 
     const buttons = [];
-    if (!status.installed) {
+    if (!status.managed) {
+      if (status.healthy) {
+        buttons.push(el('a', { class: 'btn', href: grafanaBase(), target: '_blank',
+          rel: 'noopener' }, 'Открыть в новой вкладке ↗'));
+      }
+    } else if (!status.installed) {
       buttons.push(el('button', { class: 'primary', onclick: install },
         'Установить Grafana'));
     } else if (!status.running) {
@@ -81,24 +104,27 @@ export async function mount(view, shell) {
       // В демо настоящей Grafana нет — ссылка на localhost:3000 вводила бы в
       // заблуждение
       if (!window.PLC_DEMO) {
-        buttons.push(el('a', { class: 'btn', href: status.url, target: '_blank',
+        buttons.push(el('a', { class: 'btn', href: grafanaBase(), target: '_blank',
           rel: 'noopener' }, 'Открыть в новой вкладке ↗'));
       }
     }
-    if (status.installed) {
+    if (status.managed && status.installed) {
       buttons.push(el('button', { class: 'ghost small', onclick: () => install(true) },
         'Переустановить'));
     }
 
     return el('div', { class: 'card' },
       el('div', { class: 'row' },
-        el('h2', { style: 'margin:0' }, 'Локальная Grafana'),
+        el('h2', { style: 'margin:0' },
+          status.managed ? 'Локальная Grafana' : 'Внешняя Grafana'),
         el('span', { class: 'spacer' }),
         ...buttons),
-      el('p', { class: 'hint', style: 'margin-top:10px' },
-        'Приложение скачивает portable-сборку Grafana в папку проекта и запускает её '
-        + 'как дочерний процесс — в систему ничего не устанавливается. Датасорс '
-        + 'PostgreSQL и дашборды настраиваются автоматически, вход не требуется.'),
+      el('p', { class: 'hint', style: 'margin-top:10px' }, status.managed
+        ? 'Приложение скачивает portable-сборку Grafana в папку проекта и запускает её '
+          + 'как дочерний процесс — в систему ничего не устанавливается. Датасорс '
+          + 'PostgreSQL и дашборды настраиваются автоматически, вход не требуется.'
+        : 'Grafana работает отдельно (например, соседним docker-контейнером). '
+          + 'Приложение готовит для неё датасорс и дашборды через provisioning.'),
       el('div', { class: 'row' },
         ...chips.map(([k, v, kind]) => el('span', { class: `pill ${kind}` }, `${k}: ${v}`))),
       status.log_tail && status.log_tail.length && !status.running
@@ -125,6 +151,12 @@ export async function mount(view, shell) {
   }
 
   function helpCard() {
+    if (!status.managed) {
+      return el('div', { class: 'card' }, emptyState(
+        'Grafana не отвечает',
+        `Приложение не может достучаться до ${status.url}. Проверьте, что контейнер `
+        + 'или служба Grafana запущены.'));
+    }
     return el('div', { class: 'card' }, emptyState(
       status.installed ? 'Grafana не запущена' : 'Grafana ещё не установлена',
       status.installed
@@ -154,12 +186,12 @@ export async function mount(view, shell) {
 
     // В демо на GitHub Pages настоящей Grafana нет — показываем снимок
     // того же дашборда, чтобы было видно, что именно генерирует приложение.
-    const isImage = /\.(png|jpe?g|webp)$/i.test(chosen.embed_url);
+    const isImage = !chosen.embed_path && /\.(png|jpe?g|webp)$/i.test(chosen.embed_url);
     const frame = isImage
       ? el('img', { src: chosen.embed_url, alt: chosen.title,
         style: 'width:100%;margin-top:12px;border:1px solid var(--line);'
              + 'border-radius:var(--radius)' })
-      : el('iframe', { class: 'gf-frame', src: chosen.embed_url,
+      : el('iframe', { class: 'gf-frame', src: grafanaBase() + chosen.embed_path,
         style: 'margin-top:12px', title: chosen.title });
 
     return el('div', { class: 'card' },
@@ -168,7 +200,8 @@ export async function mount(view, shell) {
         picker,
         el('span', { class: 'spacer' }),
         isImage ? null
-          : el('a', { class: 'btn small', href: chosen.url, target: '_blank',
+          : el('a', { class: 'btn small', href: grafanaBase() + chosen.path,
+            target: '_blank',
             rel: 'noopener' }, 'Открыть отдельно ↗')),
       isImage
         ? el('div', { class: 'note warn' },
